@@ -1,0 +1,13 @@
+    name: Unzip File
+
+    on: [push]
+
+    jobs:
+      unzip_job:
+        runs-on: ubuntu-latest
+        steps:
+        - name: Checkout code
+          uses: actions/checkout@v4
+        - name: Extract zip file
+          run: unzip your_archive.zip -d extracted_folder
+        # Further steps to process or commit extracted files if needed
