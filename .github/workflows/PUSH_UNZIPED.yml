@@ -1,0 +1,49 @@
+name: Unzip and Push Static Files
+
+on:
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      zip_file_name:
+        description: 'The name of the ZIP file in the static/ folder.'
+        required: true
+        default: 'example.zip'
+      
+jobs:
+  unzip-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Use the PAT for permission to push back to the repo
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Unzip file
+        id: unzip
+        run: |
+          UNZIP_PATH=static/${{ github.event.inputs.zip_file_name }}
+          if [ -f "$UNZIP_PATH" ]; then
+            echo "Unzipping file: $UNZIP_PATH"
+            unzip -o "$UNZIP_PATH" -d static/
+          else
+            echo "File not found: $UNZIP_PATH"
+            exit 1
+          fi
+        
+      - name: Configure Git
+        run: |
+          git config user.name "Mahesh Umale"
+          git config user.email "mumale@gmail.com"
+          
+      - name: Commit and Push changes
+        run: |
+          git add static/
+          # Check for changes to avoid committing when nothing has been extracted
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: Unzip and push new files from ${{ github.event.inputs.zip_file_name }}"
+            git push
+          else
+            echo "No changes to commit."
+          fi
