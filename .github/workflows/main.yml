@@ -1,13 +1,22 @@
-    name: Unzip File
+name: Unzip Static Content
 
-    on: [push]
+on:
+  push:
+    branches:
+      - main
 
-    jobs:
-      unzip_job:
-        runs-on: ubuntu-latest
-        steps:
-        - name: Checkout code
-          uses: actions/checkout@v4
-        - name: Extract zip file
-          run: unzip your_archive.zip -d extracted_folder
-        # Further steps to process or commit extracted files if needed
+jobs:
+  unzip_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create static folder (if it doesn't exist)
+        run: mkdir -p static
+
+      - name: CD to static folder (if it doesn't exist)
+        run: cd  static
+
+      - name: Unzip content to static folder
+        run: unzip -o UpstoxWSS_07_10_25.zip -d .
