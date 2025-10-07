@@ -162,7 +162,8 @@
                 sessionStorage.setItem(`${currentSymbol}_history_loaded`, 'true');
 
                 ecOhlcData = msg.data.ohlc;
-                ecBubbleData = msg.data.bubble;
+                // Transform bubble data from array of objects to array of arrays
+                ecBubbleData = msg.data.bubble.map(b => [b.x, b.y, b.q, b.impactScore]);
                 ecNormalBuyVol = msg.data.normalBuy;
                 ecBigBuyVol = msg.data.bigBuy;
                 ecNormalSellVol = msg.data.normalSell;
@@ -190,7 +191,8 @@
                     ecNormalSellVol.push([lc.time, -lc.sellVolume]);
                     ecBigSellVol.push([lc.time, -lc.bigPlayerSellVolume]);
                 }
-                ecBubbleData = msg.bubbles;
+                // Also transform live bubble data
+                ecBubbleData = msg.bubbles.map(b => [b.x, b.y, b.q, b.impactScore]);
                 updateChartLive();
             });
 
