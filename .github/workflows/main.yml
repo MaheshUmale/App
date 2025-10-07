@@ -1,9 +1,12 @@
-name: Unzip Static Content
+name: CI Unzip Static Content
 
 on:
   push:
     branches:
       - main
+
+permissions:
+  contents: write # Add this line
 
 jobs:
   unzip_and_deploy:
