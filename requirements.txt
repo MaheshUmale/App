@@ -3,3 +3,8 @@ pandas-ta
 tradingview-screener
 Flask
 rookiepy
+websockets
+protobuf
+Flask-SocketIO
+upstox-python-sdk
+eventlet
