@@ -25,3 +25,9 @@ jobs:
 
       - name: Unzip content of UpstoxWSS_07_10_25 to static folder
         run: unzip -o static/UpstoxWSS_07_10_25.zip -d static
+
+      - name: Commit and push the new file
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Add unzipped file from workflow run"
+          file_pattern: "static/UpstoxWSS_*.txt"
