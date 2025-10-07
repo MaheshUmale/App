@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Market Data Visualizer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    
+    <!-- Socket.IO Client Library (Note: It assumes the server is running on the same host/port, or you explicitly set the URL) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; }
+        #last-update-info::-webkit-scrollbar { width: 5px; }
+        #last-update-info::-webkit-scrollbar-track { background: #e2e8f0; }
+        #last-update-info::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 10px; }
+        .spinner { border: 4px solid rgba(0, 0, 0, 0.1); border-left-color: #3b82f6; border-radius: 50%; width: 1rem; height: 1rem; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="text-gray-800">
+    <div id="app" class="container mx-auto p-4 max-w-7xl">
+        <h1 class="text-3xl font-bold mb-6 text-gray-900">Live Market Data Visualizer (Client)</h1>
+        <p class="mb-4 text-sm text-blue-600 font-medium">
+            **Note:** This client requires the **Python server (`server.py`)** to be running locally to function.
+        </p>
+
+        <!-- Main Control Panel -->
+        <div class="bg-white p-4 rounded-lg shadow-lg mb-6">
+
+            <!-- Live Feed Controls -->
+            <div class="flex flex-wrap gap-4 items-end pt-2 border-t border-gray-100">
+                
+                <div>
+                    <label for="security-select" class="block text-sm font-medium text-gray-700">1. Security ID (Live/Historical)</label>
+                    <select id="security-select" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
+                        <option value="" disabled selected>-- Select Security --</option>
+                        <!-- Securities populated by Python server -->
+                    </select>
+                </div>
+                
+                <div>
+                    <label for="interval-input" class="block text-sm font-medium text-gray-700">2. Candle Interval</label>
+                    <select id="interval-input" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
+                        <option value="1T" selected>1 Minute</option>
+                        <option value="5T">5 Minutes</option>
+                        <option value="10S">10 Seconds</option>
+                        <option value="30S">30 Seconds</option>
+                    </select>
+                </div>
+
+                <div>
+                    <label for="threshold-input" class="block text-sm font-medium text-gray-700">3. Total Qty Threshold (Bubble)</label>
+                    <input type="number" id="threshold-input" value="20" class="mt-1 block w-full pl-3 pr-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                </div>
+
+                <div>
+                    <label for="big-player-threshold-input" class="block text-sm font-medium text-gray-700">4. Big Player Qty</label>
+                    <input type="number" id="big-player-threshold-input" value="50" class="mt-1 block w-full pl-3 pr-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                </div>
+
+                <div id="status-indicator" class="flex items-center space-x-2 ml-auto">
+                    <div class="spinner"></div>
+                    <span id="status-text" class="text-sm font-medium text-gray-600">Connecting to Server...</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-white p-4 rounded-lg shadow-lg mb-6">
+            <div id="trading-chart" style="width: 100%; height: 65vh;"></div>
+            <div id="no-data-message" class="text-center py-20 text-gray-500 hidden">
+                Awaiting historical and live data from server. Select a security to start.
+            </div>
+        </div>
+
+        <div class="bg-gray-800 text-white p-3 rounded-lg shadow-lg">
+            <h3 class="text-lg font-semibold border-b border-gray-700 pb-1 mb-2">Stream Log</h3>
+            <div id="last-update-info" class="text-xs space-y-0.5 h-32 overflow-y-auto" style="line-height: 1.2;">
+                </div>
+        </div>
+    </div>
+
+    <script>
+        // --- DOM Element References & Global State ---
+        const securitySelect = document.getElementById('security-select');
+        const intervalInput = document.getElementById('interval-input');
+        const thresholdInput = document.getElementById('threshold-input');
+        const bigPlayerThresholdInput = document.getElementById('big-player-threshold-input');
+        const statusIndicator = document.getElementById('status-indicator');
+        const statusText = document.getElementById('status-text');
+        const spinner = statusIndicator.querySelector('.spinner');
+        const chartContainer = document.getElementById('trading-chart');
+        const noDataMessage = document.getElementById('no-data-message');
+        const logContainer = document.getElementById('last-update-info');
+        
+        let tradingChart = null;
+        let socket = null;
+        
+        // Data storage now only needs to hold the final, ECharts-ready arrays
+        let currentSecurity = '';
+        let globalAvgLtq = 50; 
+        
+        // ECharts Data Series (These arrays will be completely replaced on historical load,
+        // and appended/modified on live update)
+        let ecOhlcData = [];
+        let ecBubbleData = [];
+        let ecNormalBuyVol = [];
+        let ecBigBuyVol = [];
+        let ecNormalSellVol = [];
+        let ecBigSellVol = [];
+
+
+        // --- Utility Functions ---
+
+        const logUpdate = (message) => {
+            const now = new Date();
+            const timeString = now.toLocaleTimeString();
+            logContainer.innerHTML += `<div>[${timeString}] ${message}</div>`;
+            logContainer.scrollTop = logContainer.scrollHeight;
+        };
+
+        const updateStatus = (text, isLoading = false) => {
+            statusText.textContent = text;
+            spinner.style.display = isLoading ? 'block' : 'none';
+            statusText.classList.remove('text-red-600', 'text-green-600', 'text-gray-600');
+            if (text.includes('Connected') || text.includes('Ready') || text.includes('Live')) {
+                 statusText.classList.add('text-green-600');
+            } else if (text.includes('Disconnected') || text.includes('Error') || text.includes('Failed')) {
+                 statusText.classList.add('text-red-600');
+            } else {
+                 statusText.classList.add('text-gray-600');
+            }
+        };
+
+        const populateSecurityDropdown = (securityIds) => {
+            securitySelect.innerHTML = '<option value="" disabled selected>-- Select Security --</option>';
+            securityIds.forEach(id => {
+                const option = document.createElement('option');
+                option.value = id;
+                option.textContent = id;
+                securitySelect.appendChild(option);
+            });
+            logUpdate(`Dropdown updated with ${securityIds.length} securities from server.`);
+        };
+        
+        const resetChartState = () => {
+            ecOhlcData = [];
+            ecBubbleData = [];
+            ecNormalBuyVol = [];
+            ecBigBuyVol = [];
+            ecNormalSellVol = [];
+            ecBigSellVol = [];
+            if (tradingChart) tradingChart.setOption(getChartOption(), true);
+        }
+
+        // --- ECharts Visualization ---
+
+        const drawChart = () => {
+            chartContainer.style.width = '100%';
+            chartContainer.style.height = '65vh';
+            if (tradingChart) echarts.dispose(tradingChart);
+            tradingChart = echarts.init(chartContainer);
+            
+            const option = getChartOption();
+            tradingChart.setOption(option, true); 
+            noDataMessage.style.display = ecOhlcData.length === 0 ? 'block' : 'none';
+        };
+
+        const getChartOption = () => {
+            return {
+                animation: false, 
+                tooltip: { 
+                    trigger: 'axis',
+                    axisPointer: { type: 'cross' },
+                    formatter: function (params) {
+                        const validParams = params.filter(p => p.value && p.value.length > 0);
+                        if (validParams.length === 0) return '';
+                        
+                        let res = 'Date: ' + new Date(validParams[0].value[0]).toLocaleString() + '<br/>';
+                        let ohlcItem = validParams.find(p => p.seriesName === 'Candlestick');
+                        if (ohlcItem) {
+                            res += `O: ${ohlcItem.value[1].toFixed(2)} | H: ${ohlcItem.value[4].toFixed(2)} | L: ${ohlcItem.value[3].toFixed(2)} | C: ${ohlcItem.value[2].toFixed(2)}<br/>`;
+                        }
+                        let bubbleItem = validParams.find(p => p.seriesName === 'High Impact Trade');
+                        if (bubbleItem && bubbleItem.value[2]) {
+                            res += `<span style="color:${bubbleItem.color}">●</span> Impact Qty: ${bubbleItem.value[2]} | Impact Score: ${bubbleItem.value[3].toFixed(1)}x<br/>`;
+                        }
+                        let volumeItems = validParams.filter(p => p.seriesName.includes('Buy') || p.seriesName.includes('Sell'));
+                        let totalVolume = volumeItems.reduce((sum, p) => sum + Math.abs(p.value[1]), 0);
+                        res += 'Total Volume: ' + totalVolume;
+                        return res;
+                    }
+                },
+                axisPointer: { link: [{ xAxisIndex: 'all' }] },
+                grid: [
+                    { left: '10%', right: '8%', height: '50%' },
+                    { left: '10%', right: '8%', top: '68%', height: '16%' }
+                ],
+                xAxis: [
+                    { type: 'time', scale: true, axisLine: { onZero: false }, splitLine: { show: false }, axisLabel: { show: false } },
+                    { type: 'time', gridIndex: 1, scale: true, axisLine: { onZero: false }, axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: true } }
+                ],
+                yAxis: [
+                    { scale: true, splitArea: { show: true } },
+                    { gridIndex: 1, scale: true, splitNumber: 2, axisLabel: { show: false }, axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: false } }
+                ],
+                dataZoom: [
+                    { type: 'inside', xAxisIndex: [0, 1], start: 90, end: 100 }, 
+                    { show: true, xAxisIndex: [0, 1], type: 'slider', top: '90%', start: 90, end: 100 }
+                ],
+                series: [
+                    { name: 'Candlestick', type: 'candlestick', data: ecOhlcData, itemStyle: { color: '#22c55e', color0: '#ef4444', borderColor: '#16a34a', borderColor0: '#dc2626' } },
+                    {
+                        name: 'High Impact Trade', type: 'scatter', data: ecBubbleData,
+                        symbolSize: (data) => {
+                            const quantity = data[2];
+                            const normalized = Math.log(quantity / globalAvgLtq + 1); 
+                            return Math.min(50, Math.max(5, normalized * 10));
+                        },
+                        itemStyle: {
+                            color: (params) => {
+                                const impactScore = params.data[3];
+                                const cap = 5.0; 
+                                const ratio = Math.min(1, Math.max(0, (impactScore - 1) / (cap - 1)));
+                                const hue = (1 - ratio) * 120; // Green (120) to Red (0)
+                                return `hsl(${hue}, 80%, 50%)`;
+                            },
+                            opacity: 0.7
+                        }
+                    },
+                    { name: 'Normal Buy', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: ecNormalBuyVol, stack: 'TotalVolume', itemStyle: { color: '#86efac'} },
+                    { name: 'Big Player Buy', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: ecBigBuyVol, stack: 'TotalVolume', itemStyle: { color: '#22c55e'} },
+                    { name: 'Normal Sell', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: ecNormalSellVol, stack: 'TotalVolume', itemStyle: { color: '#fca5a5'} },
+                    { name: 'Big Player Sell', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: ecBigSellVol, stack: 'TotalVolume', itemStyle: { color: '#ef4444'} }
+                ]
+            };
+        };
+
+        // const updateChartLive = () => {
+        //     if (!tradingChart) return;
+            
+        //     // Update all series data
+        //     tradingChart.setOption({
+        //         series: [
+        //             { name: 'Candlestick', data: ecOhlcData },
+        //             { name: 'High Impact Trade', data: ecBubbleData },
+        //             { name: 'Normal Buy', data: ecNormalBuyVol },
+        //             { name: 'Big Player Buy', data: ecBigBuyVol },
+        //             { name: 'Normal Sell', data: ecNormalSellVol },
+        //             { name: 'Big Player Sell', data: ecBigSellVol }
+        //         ]
+        //     }, { notMerge: ['xAxis', 'yAxis', 'grid', 'dataZoom'] }); 
+            
+        //     // Ensure data zoom stays on the latest data
+        //     tradingChart.dispatchAction({
+        //         type: 'dataZoom',
+        //         start: 90,
+        //         end: 100
+        //     });
+        //     noDataMessage.style.display = 'none';
+        // };
+        
+
+        const updateChartLive = () => {
+    if (!tradingChart) return;
+
+    // 1. Update all series data
+    // **Remove the { notMerge: [...] } argument**
+    tradingChart.setOption({
+        series: [
+            { name: 'Candlestick', data: ecOhlcData },
+            { name: 'High Impact Trade', data: ecBubbleData },
+            { name: 'Normal Buy', data: ecNormalBuyVol },
+            { name: 'Big Player Buy', data: ecBigBuyVol },
+            { name: 'Normal Sell', data: ecNormalSellVol },
+            { name: 'Big Player Sell', data: ecBigSellVol }
+        ]
+    }, 
+    // Pass 'true' (or no second argument) for the `notMerge` option 
+    // to update only data, preserving components like dataZoom.
+    // If you need to update only data and not components, set `silent: true` (optional)
+    // but the default behavior is usually sufficient here.
+    true 
+    // The previous argument: { notMerge: ['xAxis', 'yAxis', 'grid', 'dataZoom'] }
+    // is what likely caused the canvas blanking issue.
+    ); 
+    
+    // 2. Ensure data zoom stays on the latest data (keep this action)
+    // This action will now correctly modify the existing dataZoom state.
+    tradingChart.dispatchAction({
+        type: 'dataZoom',
+        start: 90,
+        end: 100
+    });
+    noDataMessage.style.display = 'none';
+};
+
+        // --- Socket Setup and Event Handlers ---
+
+        const connectSocket = () => {
+            if (socket) socket.close();
+
+            // Connect to the Flask server running on port 5000 (standard for local Flask)
+            socket = io(); 
+
+            socket.on('connect', () => {
+                logUpdate('WebSocket Connected to Python Server.');
+                updateStatus('Connected. Requesting securities...', true);
+                // 1. Request the list of available securities from the server
+                socket.emit('get_securities');
+            });
+
+            socket.on('disconnect', () => {
+                logUpdate('WebSocket Disconnected. Server shut down or connection lost.');
+                updateStatus('Disconnected.', false);
+            });
+
+            socket.on('connect_error', (error) => {
+                logUpdate(`Connection Error: Server may not be running on port 5000. Error: ${error.message}`);
+                updateStatus('Connection Error.', false);
+            });
+            
+            // 2. Handle the list of securities received from the server
+            socket.on('available_securities', (data) => {
+                populateSecurityDropdown(data.securities);
+                updateStatus('Server Ready. Select a security to stream.', false);
+            });
+
+            // 3. Handle historical data received (full OHLC/Volume series)
+            socket.on('historical_data', (data) => {
+                if (data.securityId !== currentSecurity) return;
+
+                // Replace local data arrays entirely with historical data
+                ecOhlcData = data.data.ohlc;
+                ecBubbleData = data.data.bubble;
+                ecNormalBuyVol = data.data.normalBuy;
+                ecBigBuyVol = data.data.bigBuy;
+                ecNormalSellVol = data.data.normalSell;
+                ecBigSellVol = data.data.bigSell;
+                
+                logUpdate(`Historical data (${ecOhlcData.length} candles) loaded for ${currentSecurity}. Starting live feed...`);
+                
+                updateChartLive(); // Initial draw with historical data
+                updateStatus(`Streaming ${currentSecurity} Live.`, true); // Set to true initially as we wait for first live trade
+            });
+
+            // 4. Handle live update (only the last candle and bubble updates)
+            socket.on('live_update', (data) => {
+                if (data.securityId !== currentSecurity || !data.lastCandle) return;
+                
+                const lc = data.lastCandle;
+                
+                // OHLC Update: Find the last candle in our array
+                const lastCandleIndex = ecOhlcData.length - 1;
+                
+                // If the last incoming candle timestamp is the same as our last stored candle, update it.
+                // Otherwise, the server has rolled over the candle, so we add the new one.
+                if (lastCandleIndex >= 0 && ecOhlcData[lastCandleIndex][0] === lc.time) {
+                    // Update existing candle (time, O, C, L, H)
+                    ecOhlcData[lastCandleIndex] = [lc.time, lc.open, lc.close, lc.low, lc.high];
+                    
+                    // Update existing volume data (Time, Volume)
+                    ecNormalBuyVol[lastCandleIndex] = [lc.time, lc.buyVolume];
+                    ecBigBuyVol[lastCandleIndex] = [lc.time, lc.bigPlayerBuyVolume];
+                    ecNormalSellVol[lastCandleIndex] = [lc.time, -lc.sellVolume];
+                    ecBigSellVol[lastCandleIndex] = [lc.time, -lc.bigPlayerSellVolume];
+                } else {
+                    // New candle rolled over by the server, push new data
+                    ecOhlcData.push([lc.time, lc.open, lc.close, lc.low, lc.high]);
+                    ecNormalBuyVol.push([lc.time, lc.buyVolume]);
+                    ecBigBuyVol.push([lc.time, lc.bigPlayerBuyVolume]);
+                    ecNormalSellVol.push([lc.time, -lc.sellVolume]);
+                    ecBigSellVol.push([lc.time, -lc.bigPlayerSellVolume]);
+                }
+                
+                // Bubble Data Update (Always overwrite the full array as the server handles aggregation)
+                ecBubbleData = data.bubbles.map(d => [d.x, d.y, d.q, d.impactScore || 1]);
+
+                updateChartLive();
+                updateStatus(`Streaming ${currentSecurity} Live. Last Price: ${lc.close.toFixed(2)}`, false);
+            });
+        };
+        
+        // --- Event Handlers ---
+
+        const handleStartStreamRequest = () => {
+            currentSecurity = securitySelect.value;
+            if (!currentSecurity) {
+                logUpdate('Please select a security first.');
+                return;
+            }
+
+            resetChartState(); // Clear local chart data before requesting new stream
+            drawChart(); // Redraw empty chart
+
+            const streamData = {
+                securityId: currentSecurity,
+                interval: intervalInput.value,
+                threshold: thresholdInput.value,
+                bigPlayerThreshold: bigPlayerThresholdInput.value,
+            };
+            
+            // Send request to server to start historical aggregation and live simulation
+            socket.emit('start_stream', streamData);
+            updateStatus(`Requesting stream for ${currentSecurity}...`, true);
+            logUpdate(`Requesting stream for ${currentSecurity} (${intervalInput.value} intervals) from server.`);
+        };
+
+        securitySelect.addEventListener('change', handleStartStreamRequest);
+        intervalInput.addEventListener('change', handleStartStreamRequest);
+        thresholdInput.addEventListener('change', handleStartStreamRequest);
+        bigPlayerThresholdInput.addEventListener('change', handleStartStreamRequest);
+
+        window.addEventListener('resize', () => {
+            if (tradingChart) {
+                tradingChart.resize();
+            }
+        });
+
+        // --- Initialization ---
+        window.onload = () => {
+            drawChart(); // Initialize empty chart structure
+            connectSocket(); // Connect to the Python server
+        };
+    </script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login to Upstox</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f7f6; color: #333; display: flex; justify-content: center; align-items: center; min-height: 90vh; }
+        .login-container { background-color: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); text-align: center; max-width: 400px; width: 100%; }
+        h1 { color: #2c3e50; margin-bottom: 20px; }
+        a { display: inline-block; padding: 12px 25px; background-color: #3498db; color: white; text-decoration: none; border-radius: 5px; font-size: 1.1em; transition: background-color 0.2s; }
+        a:hover { background-color: #2980b9; }
+        p { margin-top: 20px; color: #555; }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <h1>Welcome to Upstox Market Data App</h1>
+        <p>This application requires access to your Upstox account to fetch market data.</p>
+        <a href="{{ auth_url }}">Click here to authenticate with Upstox</a>
+        <p>After successful authentication, you will be redirected back to the application to view live market data.</p>
+    </div>
+</body>
+</html>
+

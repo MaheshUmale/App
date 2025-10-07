@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upstox V3 Live Feed Web App</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background-color: #f4f7f6; color: #333; }
+        .container { max-width: 900px; margin: auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 8px; background-color: #fff; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        h1, h2, h3 { color: #2c3e50; border-bottom: 1px solid #eee; padding-bottom: 5px; margin-top: 20px; }
+        input[type="text"] { width: 350px; padding: 10px; margin-right: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 1em; }
+        button { padding: 10px 20px; background-color: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1em; transition: background-color 0.2s; }
+        button:hover { background-color: #2980b9; }
+        #subscribed-list { list-style: none; padding: 0; margin-top: 10px; border: 1px solid #e0e0e0; border-radius: 4px; max-height: 150px; overflow-y: auto; background-color: #fcfcfc;}
+        #subscribed-list li { padding: 10px 15px; border-bottom: 1px dashed #eee; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+        #subscribed-list li.selected { background-color: #e6f7ff; font-weight: bold; border-left: 3px solid #3498db; padding-left: 12px; }
+        #feed-display { border: 1px solid #ccc; padding: 10px; height: 350px; overflow-y: scroll; background-color: #fcfcfc; font-size: 0.85em; line-height: 1.4; margin-top: 10px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; }
+        .status-message { padding: 8px; border-radius: 4px; margin-bottom: 10px; font-size: 0.9em; }
+        .status-message.success { background-color: #e8f9ed; color: #27ae60; border: 1px solid #d4f2dc; }
+        .status-message.error { background-color: #fcebeb; color: #c0392b; border: 1px solid #f6dada; }
+        .status-message.warning { background-color: #fff3e6; color: #f39c12; border: 1px solid #ffeccf; }
+        .message { margin-bottom: 5px; border-bottom: 1px solid #eee; padding-bottom: 3px; }
+        .success { color: #27ae60; } .error { color: #c0392b; } .warning { color: #f39c12; } .info { color: #2980b9; } .data { color: #34495e; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Upstox V3 Live Feed</h1>
+        <div id="backend-status" class="status-message warning">Attempting to connect to backend...</div>
+
+        <h2>Manage Subscriptions</h2>
+        <div>
+            <input type="text" id="instrumentKeyInput" placeholder="e.g., NSE_EQ|INE020B01018">
+            <button onclick="subscribe()">Subscribe</button>
+            <button onclick="unsubscribeSelected()">Unsubscribe Selected</button>
+        </div>
+
+        <h3>Subscribed Instruments</h3>
+        <ul id="subscribed-list">
+            <!-- Subscribed instruments will appear here -->
+        </ul>
+
+        <h2>Live Feed Data</h2>
+        <div id="feed-display">
+            <!-- Live data messages will appear here -->
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        const instrumentKeyInput = document.getElementById('instrumentKeyInput');
+        const subscribedList = document.getElementById('subscribed-list');
+        const feedDisplay = document.getElementById('feed-display');
+        const backendStatusDiv = document.getElementById('backend-status');
+
+        let subscribedInstrumentsMap = {};
+
+        function addFeedMessage(message, type = '') {
+            const div = document.createElement('div');
+            div.className = 'message ' + type;
+            div.textContent = typeof message === 'object' ? JSON.stringify(message, null, 2) : String(message);
+            feedDisplay.appendChild(div);
+            feedDisplay.scrollTop = feedDisplay.scrollHeight;
+        }
+
+        // Socket.IO Event Handlers
+        socket.on('connect', () => {
+            backendStatusDiv.textContent = 'Connected to backend Socket.IO. Waiting for Upstox connection status...';
+            backendStatusDiv.className = 'status-message info';
+        });
+
+        socket.on('disconnect', () => {
+            backendStatusDiv.textContent = 'Disconnected from backend Socket.IO. Attempting to reconnect...';
+            backendStatusDiv.className = 'status-message error';
+            subscribedInstrumentsMap = {};
+            subscribedList.innerHTML = '';
+        });
+
+        socket.on('backend_status', (data) => {
+            addFeedMessage(`[Backend Status] ${data.message}`, 'info');
+            if (data.message.includes('Connected to Upstox backend')) {
+                backendStatusDiv.textContent = data.message;
+                backendStatusDiv.className = 'status-message success';
+            } else if (data.message.includes('Disconnected from Upstox') || data.message.includes('Error connecting to Upstox')) {
+                backendStatusDiv.textContent = data.message;
+                backendStatusDiv.className = 'status-message error';
+            }
+        });
+
+        socket.on('subscription_status', (data) => {
+            if (data.status === 'subscribed') {
+                addFeedMessage(`Subscribed to: ${data.instrument_key}`, 'success');
+                addInstrumentToList(data.instrument_key);
+            } else if (data.status === 'unsubscribed') {
+                addFeedMessage(`Unsubscribed from: ${data.instrument_key}`, 'warning');
+                removeInstrumentFromList(data.instrument_key);
+            } else if (data.status === 'failed') {
+                addFeedMessage(`Failed to subscribe/unsubscribe ${data.instrument_key}: ${data.error}`, 'error');
+            }
+        });
+
+        socket.on('live_feed', (data) => {
+            addFeedMessage(data, 'data');
+        });
+
+        // UI Functions
+        function subscribe() {
+            const instrumentKey = instrumentKeyInput.value.trim();
+            if (instrumentKey) {
+                if (subscribedInstrumentsMap[instrumentKey]) {
+                    addFeedMessage(`Already requested subscription for ${instrumentKey}.`, 'warning');
+                    return;
+                }
+                socket.emit('subscribe_instrument', { instrument_key: instrumentKey });
+                instrumentKeyInput.value = '';
+            } else {
+                alert('Please enter an instrument key.');
+            }
+        }
+
+        function unsubscribeSelected() {
+            const selectedItem = subscribedList.querySelector('li.selected');
+            if (selectedItem) {
+                const instrumentKey = selectedItem.dataset.instrumentKey;
+                socket.emit('unsubscribe_instrument', { instrument_key: instrumentKey });
+            } else {
+                alert('Please select an instrument to unsubscribe.');
+            }
+        }
+
+        function addInstrumentToList(instrumentKey) {
+            if (subscribedInstrumentsMap[instrumentKey]) return;
+
+            const li = document.createElement('li');
+            li.dataset.instrumentKey = instrumentKey;
+            li.textContent = instrumentKey;
+            li.onclick = () => {
+                document.querySelectorAll('#subscribed-list li').forEach(item => {
+                    item.classList.remove('selected');
+                });
+                li.classList.add('selected');
+            };
+            subscribedList.appendChild(li);
+            subscribedInstrumentsMap[instrumentKey] = li;
+        }
+
+        function removeInstrumentFromList(instrumentKey) {
+            const li = subscribedInstrumentsMap[instrumentKey];
+            if (li) {
+                subscribedList.removeChild(li);
+                delete subscribedInstrumentsMap[instrumentKey];
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>V4 Market Data Visualizer (Autoload)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #f8fafc; }
+        #last-update-info::-webkit-scrollbar { width: 5px; }
+        #last-update-info::-webkit-scrollbar-track { background: #e2e8f0; }
+        #last-update-info::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 10px; }
+        .spinner { border: 4px solid rgba(0, 0, 0, 0.1); border-left-color: #3b82f6; border-radius: 50%; width: 1rem; height: 1rem; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body class="text-gray-800">
+    <div id="app" class="container mx-auto p-4 max-w-7xl">
+        <h1 class="text-3xl font-bold mb-6 text-gray-900">Market Data Visualizer (Autoload File Simulation)</h1>
+
+        <div class="bg-white p-4 rounded-lg shadow-lg mb-6 flex flex-wrap gap-4 items-end">
+            <div id="file-input-group">
+                <label for="data-file-input" class="block text-sm font-medium text-gray-700">1. Data File (Autoload/Manual)</label>
+                <input type="file" id="data-file-input" accept=".txt,.json,.log" class="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
+            </div>
+
+            <div>
+                <label for="security-select" class="block text-sm font-medium text-gray-700">2. Security ID</label>
+                <select id="security-select" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
+                    <option value="">-- Select Security --</option>
+                </select>
+            </div>
+            
+            <div>
+                <label for="interval-input" class="block text-sm font-medium text-gray-700">Candle Interval</label>
+                <select id="interval-input" class="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md">
+                    <option value="1T">1 Minute</option>
+                    <option value="5T">5 Minutes</option>
+                    <option value="10S">10 Seconds</option>
+                    <option value="30S">30 Seconds</option>
+                </select>
+            </div>
+
+            <div>
+                <label for="threshold-input" class="block text-sm font-medium text-gray-700">Total Qty Threshold (Bubble)</label>
+                <input type="number" id="threshold-input" value="20" class="mt-1 block w-full pl-3 pr-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+            </div>
+
+            <div>
+                <label for="big-player-threshold-input" class="block text-sm font-medium text-gray-700">Big Player Qty</label>
+                <input type="number" id="big-player-threshold-input" value="50" class="mt-1 block w-full pl-3 pr-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+            </div>
+
+            <div id="status-indicator" class="flex items-center space-x-2 ml-auto">
+                <div class="spinner" style="display: none;"></div>
+                <span id="status-text" class="text-sm font-medium text-gray-600">Awaiting File...</span>
+            </div>
+        </div>
+
+        <div class="bg-white p-4 rounded-lg shadow-lg mb-6">
+            <div id="trading-chart" style="width: 100%; height: 65vh;"></div>
+            <div id="no-data-message" class="text-center py-20 text-gray-500 hidden">
+                No trading data to display for the selected security/file.
+            </div>
+        </div>
+
+        <div class="bg-gray-800 text-white p-3 rounded-lg shadow-lg">
+            <h3 class="text-lg font-semibold border-b border-gray-700 pb-1 mb-2">Simulation Log</h3>
+            <div id="last-update-info" class="text-xs space-y-0.5 h-32 overflow-y-auto" style="line-height: 1.2;">
+                </div>
+        </div>
+    </div>
+
+    <script>
+        // --- DOM Element References & Global State (Same as before) ---
+        const fileInput = document.getElementById('data-file-input');
+        const securitySelect = document.getElementById('security-select');
+        const intervalInput = document.getElementById('interval-input');
+        const thresholdInput = document.getElementById('threshold-input');
+        const bigPlayerThresholdInput = document.getElementById('big-player-threshold-input');
+        const statusIndicator = document.getElementById('status-indicator');
+        const statusText = document.getElementById('status-text');
+        const spinner = statusIndicator.querySelector('.spinner');
+        const chartContainer = document.getElementById('trading-chart');
+        const noDataMessage = document.getElementById('no-data-message');
+        const logContainer = document.getElementById('last-update-info');
+
+        let tradingChart = null;
+        let currentSecurity = '';
+        let currentInterval = '1T';
+        let currentThreshold = 20;
+        let currentBigPlayerThreshold = 50;
+        
+        let simulatedMessages = [];
+        let messageIndex = 0;
+        let streamInterval = null;
+        let isStreaming = false;
+
+        let allTrades = [];
+        let globalAvgLtq = 1;
+        let lastTradePrice = null;
+        let intervalMs = 60000;
+        
+        let ohlcData = [];
+        let bubbleData = [];
+        let currentOhlcBucket = null;
+        let tradesByExactTime = {};
+
+
+
+
+
+// ... (Keep existing Global State variables) ...
+// let socket = null; // New state variable for the WebSocket
+const socket = io();
+// --- Core Application Logic ---
+
+// Replace readFileContents and handleFileSelect with this:
+
+// if (socket) socket.close();
+
+// Connect to your local server running Socket.IO
+// socket = io('http://127.0.0.1:8080');
+
+socket.on('connect', () => {
+    logUpdate('WebSocket Connected. Ready to stream.');
+    updateStatus('Connected to Live Feed.', false);
+    // Request the list of instruments or an initial data dump if your server supports it.
+    // For simplicity, we assume the server will start streaming trades when the user subscribes.
+    isStreaming = true ;
+    logUpdate(' OnMessage  live.');
+    // You need to manually populate the dropdown based on what the server supports, 
+    // or hardcode a few test values since we aren't reading the file to scan.
+    // For a seamless switch, let's keep the dropdown populated from a dummy/config list for now.
+    const dummySecurityIds = new Set(["TATASTEEL", "INFOSYS", "RELIANCE"]);
+    populateSecurityDropdown(dummySecurityIds);
+});
+
+socket.on('disconnect', () => {
+    isStreaming = false ;
+    logUpdate('WebSocket Disconnected.');
+    updateStatus('Disconnected.', false);
+    stopStream(); // Stop any pending streaming if this was using the WS
+});
+
+// This assumes your server sends live updates via the 'live_feed' event
+socket.on('live_feed', (data) => {
+    // The data is the raw JSON message from the server
+    processNextMessage(JSON.stringify(data));
+    updateChartLive();
+    //logUpdate(' OnMessage  live.');
+});
+
+socket.on('initial_trades', (historicalTrades) => {
+    // *** CRITICAL: You need server logic to send initial data here ***
+    // For now, we assume the server *doesn't* send an initial dump and rely on live updates.
+    logUpdate('No initial historical data received from server. Chart will build live.');
+    // If your server sends an initial dump, you would aggregate it here and call drawChart().
+});
+
+
+
+
+
+
+
+// ... (Keep existing utility functions like logUpdate, getIntervalMs) ... 
+
+// --- Core OHLC and Bubble data processing logic remains the same (processNextMessage, etc.) ---
+
+
+
+
+
+
+
+
+
+        // --- Utility Functions (Same as before) ---
+        const logUpdate = (message) => {
+            const now = new Date();
+            const timeString = now.toLocaleTimeString();
+            logContainer.innerHTML += `<div>[${timeString}] ${message}</div>`;
+            logContainer.scrollTop = logContainer.scrollHeight;
+        };
+
+        const updateStatus = (text, isLoading = false) => {
+            statusText.textContent = text;
+            spinner.style.display = isLoading ? 'block' : 'none';
+        };
+
+        const getIntervalMs = (intervalStr) => {
+            const intervalRegex = /(\d+)([ST])/;
+            const match = intervalStr.match(intervalRegex);
+            if (match) {
+                const value = parseInt(match[1], 10);
+                const unit = match[2];
+                return unit === 'S' ? value * 1000 : value * 60000;
+            }
+            return 60000;
+        };
+        
+        // --- NEW AUTOLOAD FILE UTILITY ---
+        const getTodayFilename = () => {
+            const now = new Date();
+            const dd = String(now.getDate()).padStart(2, '0');
+            const mm = String(now.getMonth() + 1).padStart(2, '0');
+            // Use getFullYear() and slice to get last two digits
+            const yy = String(now.getFullYear()).slice(-2);
+            return `/static/UpstoxWSS_${dd}_${mm}_${yy}.txt`;
+        };
+
+        // --- Core File Processing (Consolidated) ---
+
+        const processFileContent = (content, filename) => {
+            try {
+                simulatedMessages = content.split('\n').filter(line => line.trim() !== '');
+                logUpdate(`File loaded successfully: ${filename} (${simulatedMessages.length} messages found).`);
+                
+                const { securityIds, rawTrades } = scanMessagesForSecurities(simulatedMessages);
+                allTrades = rawTrades; 
+                
+                populateSecurityDropdown(securityIds);
+
+            } catch (error) {
+                logUpdate(`Error processing file content: ${error}`);
+                updateStatus('Error processing file.', false);
+            }
+        };
+
+        // Handles file uploaded via the input field
+        const handleFileSelect = (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                updateStatus(`Reading ${file.name}...`, true);
+                stopStream(); 
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    processFileContent(e.target.result, file.name);
+                };
+                reader.onerror = () => {
+                    logUpdate('Error reading file.');
+                    updateStatus('Error reading file.', false);
+                };
+                reader.readAsText(file);
+            }
+        };
+
+        // Attempts to autoload the file using fetch (requires local server)
+        const attemptAutoload = async (filename) => {
+            updateStatus(`Attempting to autoload ${filename}...`, true);
+            stopStream();
+
+            try {
+                // Fetch the file from the current directory (requires running a local web server)
+                const response = await fetch(filename);
+
+                if (!response.ok) {
+                    throw new Error(`HTTP Error: ${response.status} ${response.statusText}`);
+                }
+                
+                const content = await response.text();
+                processFileContent(content, filename);
+                fileInput.value = ''; // Clear input if successful fetch
+                
+            } catch (error) {
+                logUpdate(`Autoload failed for ${filename}. Reason: ${error.message}.`);
+                logUpdate('Please use the file input above to manually select the data file.');
+                updateStatus('Autoload failed. Select file.', false);
+            }
+            startStream();
+        };
+
+        // --- Data Scan, Aggregation, and Charting Functions (Same as before) ---
+
+        const scanMessagesForSecurities = (messages) => {
+            const securityIds = new Set();
+            const rawTrades = [];
+            let lastPrice = {}; 
+
+            messages.forEach(msg => {
+                try {
+                    const data = JSON.parse(msg);
+                    if (data.feeds) {
+                        Object.keys(data.feeds).forEach(id => {
+                            securityIds.add(id);
+                            const feed = data.feeds[id];
+                            if (feed.ltpc && feed.ltpc.ltp && feed.ltpc.ltt && feed.ltpc.ltq) {
+                                const newPrice = parseFloat(feed.ltpc.ltp);
+                                const quantity = parseInt(feed.ltpc.ltq, 10);
+                                const timeMs = parseInt(feed.ltpc.ltt, 10);
+
+                                let aggressor = 'BUY'; 
+                                if (lastPrice[id] !== undefined) {
+                                    if (newPrice > lastPrice[id]) aggressor = 'BUY';
+                                    else if (newPrice < lastPrice[id]) aggressor = 'SELL';
+                                    else aggressor = 'HOLD';
+                                }
+                                lastPrice[id] = newPrice;
+                                
+                                rawTrades.push({
+                                    securityId: id,
+                                    time: new Date(timeMs),
+                                    price: newPrice,
+                                    quantity: quantity,
+                                    aggressor: aggressor
+                                });
+                            }
+                        });
+                    }
+                } catch (e) { /* Ignore parsing errors during scan */ }
+            });
+            return { securityIds, rawTrades };
+        };
+
+        const populateSecurityDropdown = (securityIds) => {
+            securitySelect.innerHTML = '';
+            
+            const defaultOption = document.createElement('option');
+            defaultOption.value = '';
+            defaultOption.textContent = '-- Select Security --';
+            defaultOption.disabled = true;
+            defaultOption.selected = true;
+            securitySelect.appendChild(defaultOption);
+
+            if (securityIds.size > 0) {
+                 const sortedIds = Array.from(securityIds).sort();
+                 sortedIds.forEach(id => {
+                    const option = document.createElement('option');
+                    option.value = id;
+                    option.textContent = id;
+                    securitySelect.appendChild(option);
+                });
+                logUpdate(`Found securities: ${sortedIds.join(', ')}. Please select one.`);
+                updateStatus('File loaded. Select a security.', false);
+            } else {
+                logUpdate('No valid securities found in the file.');
+                updateStatus('No securities found.', false);
+            }
+        }
+        
+        const startInitialLoadAndStream = () => {
+            if (!currentSecurity) return; 
+
+            updateStatus(`Initial data load for ${currentSecurity}...`, true);
+            stopStream(); 
+            
+            const securityTrades = allTrades.filter(t => t.securityId === currentSecurity);
+            
+            ohlcData = [];
+            bubbleData = [];
+            lastTradePrice = null;
+            currentOhlcBucket = null;
+            messageIndex = 0;
+            tradesByExactTime = {}; 
+            intervalMs = getIntervalMs(currentInterval);
+            
+            if (tradingChart) {
+                echarts.dispose(tradingChart);
+                tradingChart = null;
+            }
+
+            calculateGlobalAverage(allTrades); 
+
+            if (securityTrades.length === 0) {
+                logUpdate(`No trade data found for the selected security: ${currentSecurity}.`);
+                updateStatus(`No data for ${currentSecurity}.`, false);
+                noDataMessage.style.display = 'flex';
+                return;
+            }
+
+            const initialAggregatedData = aggregateAll(securityTrades);
+            ohlcData = initialAggregatedData.ohlc;
+            bubbleData = initialAggregatedData.bubbles;
+            
+            if (securityTrades.length > 0) {
+                lastTradePrice = securityTrades[securityTrades.length - 1].price;
+            }
+
+            drawChart(ohlcData, bubbleData);
+            logUpdate(`Initial load complete for ${currentSecurity}. Plotted ${ohlcData.length} candles and ${bubbleData.length} impact bubbles.`);
+            
+            messageIndex = 0;
+            startStream(); 
+        };
+
+        const startStream = () => {
+            if ( !isStreaming) return;
+            isStreaming = true;
+            updateStatus(`Streaming new trade data for ${currentSecurity}...`, true);
+            logUpdate('Starting stream simulation.');
+            
+            const streamTick = () => {
+                if (messageIndex >= simulatedMessages.length) {
+                    stopStream();
+                    updateStatus(`Stream complete for ${currentSecurity} (End of file).`, false);
+                    logUpdate('Stream simulation finished.');
+                    return;
+                }
+
+                const msg = simulatedMessages[messageIndex];
+                processNextMessage(msg); 
+                updateChartLive();      
+                messageIndex++;
+            };
+
+            streamInterval = setInterval(streamTick, 50); 
+        };
+
+        const stopStream = () => {
+            if (streamInterval) {
+                clearInterval(streamInterval);
+                streamInterval = null;
+            }
+            // isStreaming = false;
+        };
+        
+        const processNextMessage = (dataString) => {
+            try {
+                const data = JSON.parse(dataString);
+                if (data.feeds && data.feeds[currentSecurity]) {
+                    const feed = data.feeds[currentSecurity];
+                    if (feed.ltpc && feed.ltpc.ltp && feed.ltpc.ltt && feed.ltpc.ltq) {
+                        const timeMs = parseInt(feed.ltpc.ltt, 10);
+                        const newPrice = parseFloat(feed.ltpc.ltp);
+                        const quantity = parseInt(feed.ltpc.ltq, 10);
+                        const tradeTime = new Date(timeMs);
+                        
+                        let aggressor = 'BUY'; 
+                        if (lastTradePrice !== null) {
+                            if (newPrice > lastTradePrice) aggressor = 'BUY';
+                            else if (newPrice < lastTradePrice) aggressor = 'SELL';
+                            else aggressor = 'HOLD';
+                        }
+                        
+                        const trade = { time: tradeTime, price: newPrice, quantity: quantity, aggressor: aggressor };
+
+                        if (!tradesByExactTime[timeMs]) {
+                            tradesByExactTime[timeMs] = { trades: [], price: newPrice };
+                        }
+                        tradesByExactTime[timeMs].trades.push(trade);
+
+                        const currentGroup = tradesByExactTime[timeMs];
+                        const sumLtq = currentGroup.trades.reduce((sum, t) => sum + t.quantity, 0);
+                        const maxLtq = Math.max(...currentGroup.trades.map(t => t.quantity));
+                        const bubbleId = timeMs; 
+
+                        if (sumLtq >= currentThreshold && maxLtq >= currentBigPlayerThreshold) {
+                            const impactScore = maxLtq / globalAvgLtq;
+                            
+                            if (!bubbleData.some(b => b.x === bubbleId)) {
+                                bubbleData.push({
+                                    x: bubbleId,
+                                    y: newPrice,
+                                    q: sumLtq,
+                                    impactScore: impactScore,
+                                });
+                            }
+                        }
+
+                        const intervalStartMs = Math.floor(timeMs / intervalMs) * intervalMs;
+                        
+                        if (!currentOhlcBucket || currentOhlcBucket.time !== intervalStartMs) {
+                            if (currentOhlcBucket) {
+                                ohlcData.push(currentOhlcBucket); 
+                            }
+
+                            currentOhlcBucket = {
+                                time: intervalStartMs,
+                                open: newPrice, high: newPrice, low: newPrice, close: newPrice,
+                                buyVolume: 0, bigPlayerBuyVolume: 0, sellVolume: 0, bigPlayerSellVolume: 0,
+                            };
+                        }
+
+                        currentOhlcBucket.close = newPrice;
+                        currentOhlcBucket.high = Math.max(currentOhlcBucket.high, newPrice);
+                        currentOhlcBucket.low = Math.min(currentOhlcBucket.low, newPrice);
+
+                        const isBigPlayer = quantity >= currentBigPlayerThreshold;
+
+                        if (aggressor === 'BUY' || aggressor === 'HOLD') {
+                            if (isBigPlayer) currentOhlcBucket.bigPlayerBuyVolume += quantity;
+                            else currentOhlcBucket.buyVolume += quantity;
+                        } else { 
+                            if (isBigPlayer) currentOhlcBucket.bigPlayerSellVolume += quantity;
+                            else currentOhlcBucket.sellVolume += quantity;
+                        }
+                        
+                        lastTradePrice = newPrice;
+                    }
+                }
+            } catch (e) { }
+        };
+
+        const calculateGlobalAverage = (trades) => {
+            if (trades.length === 0) {
+                globalAvgLtq = 1;
+                return;
+            }
+            const totalQuantity = trades.reduce((sum, trade) => sum + trade.quantity, 0);
+            globalAvgLtq = totalQuantity / trades.length;
+        };
+
+        const aggregateAll = (trades) => {
+            const ohlcBuckets = {};
+            const tempBubbleGroups = {}; 
+            
+            trades.forEach(trade => {
+                const intervalStartMs = Math.floor(trade.time.getTime() / intervalMs) * intervalMs;
+                const tradeTimeMs = trade.time.getTime();
+
+                if (!ohlcBuckets[intervalStartMs]) {
+                    ohlcBuckets[intervalStartMs] = {
+                        time: intervalStartMs,
+                        open: trade.price, high: trade.price, low: trade.price, close: trade.price,
+                        buyVolume: 0, bigPlayerBuyVolume: 0, sellVolume: 0, bigPlayerSellVolume: 0,
+                        firstTradeTime: tradeTimeMs, lastTradeTime: tradeTimeMs
+                    };
+                }
+                const bucket = ohlcBuckets[intervalStartMs];
+                
+                if (tradeTimeMs < bucket.firstTradeTime) {
+                    bucket.open = trade.price;
+                    bucket.firstTradeTime = tradeTimeMs;
+                } else if (tradeTimeMs > bucket.lastTradeTime) {
+                    bucket.close = trade.price;
+                    bucket.lastTradeTime = tradeTimeMs;
+                }
+                bucket.high = Math.max(bucket.high, trade.price);
+                bucket.low = Math.min(bucket.low, trade.price);
+
+                const isBigPlayer = trade.quantity >= currentBigPlayerThreshold;
+
+                if (trade.aggressor === 'BUY' || trade.aggressor === 'HOLD') {
+                    if (isBigPlayer) bucket.bigPlayerBuyVolume += trade.quantity;
+                    else bucket.buyVolume += trade.quantity;
+                } else { 
+                    if (isBigPlayer) bucket.bigPlayerSellVolume += trade.quantity;
+                    else bucket.sellVolume += trade.quantity;
+                }
+
+                if (!tempBubbleGroups[tradeTimeMs]) {
+                    tempBubbleGroups[tradeTimeMs] = { trades: [], price: trade.price };
+                }
+                tempBubbleGroups[tradeTimeMs].trades.push(trade);
+
+            });
+
+            const ohlc = Object.values(ohlcBuckets)
+                         .sort((a, b) => a.time - b.time);
+            
+            const bubbles = [];
+            Object.values(tempBubbleGroups).forEach(group => {
+                const sumLtq = group.trades.reduce((sum, t) => sum + t.quantity, 0);
+                const maxLtq = Math.max(...group.trades.map(t => t.quantity));
+
+                if (sumLtq >= currentThreshold && maxLtq >= currentBigPlayerThreshold) {
+                    const impactScore = maxLtq / globalAvgLtq;
+                    
+                    const timeMs = group.trades[0].time.getTime(); 
+                    bubbles.push({
+                        x: timeMs,
+                        y: group.trades[0].price,
+                        q: sumLtq,
+                        impactScore: impactScore,
+                    });
+                }
+            });
+
+            return { ohlc, bubbles };
+        };
+
+        const drawChart = (ohlcData, bubbleData) => {
+            chartContainer.style.width = '100%';
+            chartContainer.style.height = '65vh';
+            if (tradingChart) echarts.dispose(tradingChart);
+            tradingChart = echarts.init(chartContainer);
+
+            const ecOhlcData = ohlcData.map(d => [d.time, d.open, d.close, d.low, d.high]);
+            const ecBubbleData = bubbleData.map(d => [d.x, d.y, d.q, d.impactScore]);
+            
+            const ecNormalBuyVol = ohlcData.map(d => [d.time, d.buyVolume]);
+            const ecBigBuyVol = ohlcData.map(d => [d.time, d.bigPlayerBuyVolume]);
+            const ecNormalSellVol = ohlcData.map(d => [d.time, -d.sellVolume]);
+            const ecBigSellVol = ohlcData.map(d => [d.time, -d.bigPlayerSellVolume]);
+
+            const option = {
+                animation: true,
+                animationDuration: 50, 
+                tooltip: { 
+                    trigger: 'axis',
+                    axisPointer: { type: 'cross' },
+                    formatter: function (params) {
+                        let res = 'Date: ' + new Date(params[0].value[0]).toLocaleString() + '<br/>';
+                        let ohlcItem = params.find(p => p.seriesName === 'Candlestick');
+                        if (ohlcItem) {
+                            res += `O: ${ohlcItem.value[1].toFixed(2)} | H: ${ohlcItem.value[4].toFixed(2)} | L: ${ohlcItem.value[3].toFixed(2)} | C: ${ohlcItem.value[2].toFixed(2)}<br/>`;
+                        }
+                        let bubbleItem = params.find(p => p.seriesName === 'High Impact Trade');
+                        if (bubbleItem) {
+                            res += `<span style="color:${bubbleItem.color}">●</span> Impact Qty: ${bubbleItem.value[2]} | Impact Score: ${bubbleItem.value[3].toFixed(1)}x<br/>`;
+                        }
+                        let volumeItems = params.filter(p => p.seriesName.includes('Buy') || p.seriesName.includes('Sell'));
+                        let totalVolume = volumeItems.reduce((sum, p) => sum + Math.abs(p.value[1]), 0);
+                        res += 'Total Volume: ' + totalVolume;
+                        return res;
+                    }
+                },
+                axisPointer: { link: [{ xAxisIndex: 'all' }] },
+                grid: [
+                    { left: '10%', right: '8%', height: '50%' },
+                    { left: '10%', right: '8%', top: '68%', height: '16%' }
+                ],
+                xAxis: [
+                    { type: 'time', scale: true, axisLine: { onZero: false }, splitLine: { show: false }, axisLabel: { show: false } },
+                    { type: 'time', gridIndex: 1, scale: true, axisLine: { onZero: false }, axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: true } }
+                ],
+                yAxis: [
+                    { scale: true, splitArea: { show: true } },
+                    { gridIndex: 1, scale: true, splitNumber: 2, axisLabel: { show: false }, axisLine: { show: false }, axisTick: { show: false }, splitLine: { show: false } }
+                ],
+                dataZoom: [
+                    { type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 }, 
+                    { show: true, xAxisIndex: [0, 1], type: 'slider', top: '90%', start: 0, end: 100 }
+                ],
+                series: [
+                    { name: 'Candlestick', type: 'candlestick', data: ecOhlcData, itemStyle: { color: '#22c55e', color0: '#ef4444', borderColor: '#16a34a', borderColor0: '#dc2626' } },
+                    {
+                        name: 'High Impact Trade', type: 'scatter', data: ecBubbleData,
+                        symbolSize: (data) => {
+                            const quantity = data[2];
+                            const normalized = Math.log(quantity / globalAvgLtq + 1); 
+                            return Math.min(50, Math.max(5, normalized * 10));
+                        },
+                        itemStyle: {
+                            color: (params) => {
+                                const impactScore = params.data[3];
+                                const cap = 5.0; 
+                                const ratio = Math.min(1, Math.max(0, (impactScore - 1) / (cap - 1)));
+                                const hue = (1 - ratio) * 120; 
+                                return `hsl(${hue}, 80%, 50%)`;
+                            },
+                            opacity: 0.7
+                        }
+                    },
+                    { name: 'Normal Buy', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: ecNormalBuyVol, stack: 'TotalVolume', itemStyle: { color: '#86efac'} },
+                    { name: 'Big Player Buy', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: ecBigBuyVol, stack: 'TotalVolume', itemStyle: { color: '#22c55e'} },
+                    { name: 'Normal Sell', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: ecNormalSellVol, stack: 'TotalVolume', itemStyle: { color: '#fca5a5'} },
+                    { name: 'Big Player Sell', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: ecBigSellVol, stack: 'TotalVolume', itemStyle: { color: '#ef4444'} }
+                ]
+            };
+            tradingChart.setOption(option);
+            noDataMessage.style.display = 'none';
+        };
+
+        const updateChartLive = () => {
+            if (!tradingChart || !currentOhlcBucket) return;
+            // ... (rest of updateChartLive logic remains the same) ...
+            
+            const ecOhlcData = currentOhlcBucket ? [currentOhlcBucket.time, currentOhlcBucket.open, currentOhlcBucket.close, currentOhlcBucket.low, currentOhlcBucket.high] : [];
+            
+            const fullOhlcData = ohlcData.map(d => [d.time, d.open, d.close, d.low, d.high]);
+            const fullNormalBuyVol = ohlcData.map(d => [d.time, d.buyVolume]);
+            const fullBigBuyVol = ohlcData.map(d => [d.time, d.bigPlayerBuyVolume]);
+            const fullNormalSellVol = ohlcData.map(d => [d.time, -d.sellVolume]);
+            const fullBigSellVol = ohlcData.map(d => [d.time, -d.bigPlayerSellVolume]);
+
+            if (currentOhlcBucket) {
+                 fullOhlcData.push(ecOhlcData);
+                 fullNormalBuyVol.push([currentOhlcBucket.time, currentOhlcBucket.buyVolume]);
+                 fullBigBuyVol.push([currentOhlcBucket.time, currentOhlcBucket.bigPlayerBuyVolume]);
+                 fullNormalSellVol.push([currentOhlcBucket.time, -currentOhlcBucket.sellVolume]);
+                 fullBigSellVol.push([currentOhlcBucket.time, -currentOhlcBucket.bigPlayerSellVolume]);
+            }
+
+            tradingChart.setOption({
+                series: [
+                    { name: 'Candlestick', data: fullOhlcData },
+                    { name: 'Normal Buy', data: fullNormalBuyVol },
+                    { name: 'Big Player Buy', data: fullBigBuyVol },
+                    { name: 'Normal Sell', data: fullNormalSellVol },
+                    { name: 'Big Player Sell', data: fullBigSellVol }
+                ]
+            });
+
+            const lastBubble = bubbleData[bubbleData.length - 1];
+            if (lastBubble) {
+                const chartBubbles = tradingChart.getOption().series[1].data;
+                const isNewBubble = !chartBubbles.some(d => d[0] === lastBubble.x);
+                
+                if(isNewBubble) {
+                    tradingChart.appendData({
+                        seriesIndex: 1, 
+                        data: [lastBubble.x, lastBubble.y, lastBubble.q, lastBubble.impactScore]
+                    });
+                }
+            }
+        };
+        
+        // --- Event Listeners ---
+        const handleSettingsChange = () => {
+            stopStream();
+
+            currentInterval = intervalInput.value;
+            currentThreshold = parseInt(thresholdInput.value, 10);
+            currentBigPlayerThreshold = parseInt(bigPlayerThresholdInput.value, 10);
+            
+            if (currentSecurity) {
+                 startInitialLoadAndStream();
+            }
+        };
+
+        fileInput.addEventListener('change', handleFileSelect);
+        securitySelect.addEventListener('change', (e) => {
+            currentSecurity = e.target.value;
+            if (currentSecurity) {
+                handleSettingsChange();
+            }
+        });
+        intervalInput.addEventListener('change', handleSettingsChange);
+        thresholdInput.addEventListener('change', handleSettingsChange);
+        bigPlayerThresholdInput.addEventListener('change', handleSettingsChange);
+
+        window.addEventListener('resize', () => {
+            if (tradingChart) {
+                tradingChart.resize();
+            }
+        });
+
+        // --- AUTOLOAD STARTER ---
+        window.onload = () => {
+            const filename = getTodayFilename();
+            logUpdate(`System ready. Calculated expected filename: ${filename}.`);
+            
+            // Attempt to load the file automatically from the current directory
+            attemptAutoload(filename);
+        };
+    </script>
+</body>
+</html>
