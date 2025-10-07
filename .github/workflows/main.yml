@@ -24,4 +24,4 @@ jobs:
         
 
       - name: Unzip content of UpstoxWSS_07_10_25 to static folder
-        run: unzip -o UpstoxWSS_07_10_25.zip -d .
+        run: unzip -o static/UpstoxWSS_07_10_25.zip -d static
