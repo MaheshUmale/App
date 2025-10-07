@@ -65,7 +65,7 @@
         let tradingChart = null;
         let socket = null;
         let currentSymbol = '';
-
+        let globalAvgLtq = 50; 
         // ECharts data series arrays
         let ecOhlcData = [], ecBubbleData = [], ecNormalBuyVol = [], ecBigBuyVol = [], ecNormalSellVol = [], ecBigSellVol = [];
 
@@ -103,12 +103,29 @@
             ],
             yAxis: [{ scale: true }, { gridIndex: 1, scale: true, splitNumber: 2, axisLabel: { show: false } }],
             dataZoom: [
-                { type: 'inside', xAxisIndex: [0, 1], start: 90, end: 100 },
-                { show: true, xAxisIndex: [0, 1], type: 'slider', top: '90%', start: 90, end: 100 }
+                { type: 'inside', xAxisIndex: [0, 1], start: 0, end: 100 },
+                { show: true, xAxisIndex: [0, 1], type: 'slider', top: '90%', start: 0, end: 100 }
             ],
             series: [
-                { name: 'Candlestick', type: 'candlestick', data: ecOhlcData },
-                { name: 'Volume Bubble', type: 'scatter', data: ecBubbleData, symbolSize: data => Math.min(50, Math.max(5, Math.log(data[2] + 1) * 2)) },
+                { name: 'Candlestick', type: 'candlestick', data: ecOhlcData, itemStyle: { color: '#22c55e', color0: '#ef4444', borderColor: '#16a34a', borderColor0: '#dc2626' } },
+                { name: 'High Impact Trade', type: 'scatter', data: ecBubbleData,
+                        symbolSize: (data) => {
+                            const quantity = data[2];
+                            const normalized = Math.log(quantity / globalAvgLtq + 1); 
+                            return Math.min(50, Math.max(5, normalized * 10));
+                        },
+                        itemStyle: {
+                            color: (params) => {
+                                const impactScore = params.data[3];
+                                const cap = 5.0; 
+                                const ratio = Math.min(1, Math.max(0, (impactScore - 1) / (cap - 1)));
+                                const hue = (1 - ratio) * 120; // Green (120) to Red (0)
+                                return `hsl(${hue}, 80%, 50%)`;
+                            },
+                            opacity: 0.7
+                        }
+                    },
+                // { name: 'Volume Bubble', type: 'scatter', data: ecBubbleData, symbolSize: data => Math.min(50, Math.max(5, Math.log(data[2] + 1) * 2)) },
                 { name: 'Normal Buy', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: ecNormalBuyVol, stack: 'Vol', itemStyle: { color: '#86efac'} },
                 { name: 'Big Buy', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: ecBigBuyVol, stack: 'Vol', itemStyle: { color: '#22c55e'} },
                 { name: 'Normal Sell', type: 'bar', xAxisIndex: 1, yAxisIndex: 1, data: ecNormalSellVol, stack: 'Vol', itemStyle: { color: '#fca5a5'} },
