@@ -18,5 +18,10 @@ jobs:
       - name: CD to static folder (if it doesn't exist)
         run: cd  static
 
-      - name: Unzip content to static folder
+
+      - name:  list the files in folder
+        run:  ls 
+        
+
+      - name: Unzip content of UpstoxWSS_07_10_25 to static folder
         run: unzip -o UpstoxWSS_07_10_25.zip -d .
