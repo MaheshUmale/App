@@ -39,7 +39,8 @@ jobs:
   # Your other Git commands, like commit and push, will now work
       - name: Run git command
         run: |
-          git add static/.
+          git add .
+          git add --all
           git commit -m "Automated commit via GitHub Actions"
           git push
 
