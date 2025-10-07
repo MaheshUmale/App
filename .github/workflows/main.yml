@@ -25,6 +25,23 @@ jobs:
 
       - name: Unzip content of UpstoxWSS_07_10_25 to static folder
         run: unzip -o static/UpstoxWSS_07_10_25.zip -d static
+ 
+      - name: Configure Git Credentials
+        # Replace the name and email with your desired values.
+        # You can use the built-in GitHub bot identity for automation commits.
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+      
+  # Your other Git commands, like commit and push, will now work
+      - name: Run git command
+        run: |
+          git add static/.
+          git commit -m "Automated commit via GitHub Actions"
+          git push
+
+ 
+
 
         
       - name: Unzip content of UpstoxWSS_07_10_25 to static folder
